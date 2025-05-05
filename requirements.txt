@@ -1,0 +1,7 @@
+facebook-business
+gspread
+google-auth
+twilio
+PyYAML
+python-dotenv
+anthropic
