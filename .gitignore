@@ -3,12 +3,12 @@
 .env.local
 .env.*.local
 # But keep the example file
-!.env.example
+!.env
 
 # Ignore service account credentials
 service_account_credentials.json
 # But keep the example file
-!service_account_credentials.example.json
+!service_account_credentials.json
 
 # Python bytecode
 __pycache__/
