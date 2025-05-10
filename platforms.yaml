@@ -1,0 +1,32 @@
+# Platform configurations for Facebook Ads Uploader
+# Each platform corresponds to a specific set of credentials and settings
+platforms:
+  # Ads.com Platform
+  "Ads.com":
+    ad_account_id: "${FB_AD_ACCOUNT_ID}"
+    page_id: "${FB_PAGE_ID}"
+    pixel_id: "${FB_PIXEL_ID}"
+    app_id: "${FB_APP_ID}"
+    app_secret: "${FB_APP_SECRET}"
+    access_token: "${FB_ACCESS_TOKEN}"
+    api_version: "${FB_API_VERSION}"
+
+  # Secondary Facebook API platform example
+  "Media.net":
+    ad_account_id: "${FB_AD_ACCOUNT_ID_2}"
+    page_id: "${FB_PAGE_ID_2}"
+    pixel_id: "${FB_PIXEL_ID_2}"
+    app_id: "${FB_APP_ID_2}"
+    app_secret: "${FB_APP_SECRET_2}"
+    access_token: "${FB_ACCESS_TOKEN_2}"
+    api_version: "${FB_API_VERSION_2}"
+
+  # Add more platforms as needed following the same structure
+  # "platform_name":
+  #   ad_account_id: "${ENV_VAR_AD_ACCOUNT_ID}"
+  #   page_id: "${ENV_VAR_PAGE_ID}"
+  #   pixel_id: "${ENV_VAR_PIXEL_ID}"
+  #   app_id: "${ENV_VAR_APP_ID}"
+  #   app_secret: "${ENV_VAR_APP_SECRET}"
+  #   access_token: "${ENV_VAR_ACCESS_TOKEN}"
+  #   api_version: "${ENV_VAR_API_VERSION}"

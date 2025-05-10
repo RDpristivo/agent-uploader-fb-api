@@ -2,10 +2,14 @@ import json
 import os
 import logging
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import threading
-import anthropic
 import time
+import inspect
+import traceback
+
+# Import MCP tool functions
+from facebook_ads_uploader.mcp_tool import create_maximizer_campaign, ping
 
 # Configure logging
 logging.basicConfig(
@@ -19,11 +23,6 @@ logger = logging.getLogger("mcp_server")
 class MCPHandler(BaseHTTPRequestHandler):
     """HTTP request handler for the Model Context Protocol (MCP)"""
 
-    def __init__(self, *args, api_key: Optional[str] = None, **kwargs):
-        self.api_key = api_key
-        self.client = anthropic.Anthropic(api_key=self.api_key) if api_key else None
-        super().__init__(*args, **kwargs)
-
     def _set_headers(self, content_type="application/json"):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
@@ -36,10 +35,24 @@ class MCPHandler(BaseHTTPRequestHandler):
         """Handle preflight CORS requests"""
         self._set_headers()
 
+    def do_GET(self):
+        """Handle GET requests - used for health checks"""
+        if self.path == "/health" or self.path == "/":
+            self._set_headers()
+            response = {"status": "ok", "message": "MCP server is running"}
+            self.wfile.write(json.dumps(response).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+            response = {"error": "Not found"}
+            self.wfile.write(json.dumps(response).encode())
+
     def do_POST(self):
-        """Handle POST requests for Claude messaging"""
+        """Handle POST requests for MCP endpoints"""
         if self.path == "/v1/messages":
             self._handle_messages()
+        elif self.path == "/v1/tools":
+            self._handle_tools()
         else:
             self.send_response(404)
             self.end_headers()
@@ -47,15 +60,7 @@ class MCPHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(response).encode())
 
     def _handle_messages(self):
-        """Process /v1/messages API endpoint"""
-        # Verify API key exists
-        if not self.client:
-            self.send_response(401)
-            self.end_headers()
-            response = {"error": "API key not configured"}
-            self.wfile.write(json.dumps(response).encode())
-            return
-
+        """Process /v1/messages API endpoint - wrapper for Claude API"""
         # Get request body
         content_length = int(self.headers.get("Content-Length", 0))
         if content_length == 0:
@@ -74,25 +79,98 @@ class MCPHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(response).encode())
             return
 
-        # Process the Claude message request
-        try:
-            # Extract input from the request
-            model = request_data.get("model", "claude-3-opus-20240229")
-            max_tokens = request_data.get("max_tokens", 1024)
-            messages = request_data.get("messages", [])
-            system = request_data.get("system", "")
+        # The actual handling of Claude API calls would go here
+        # Instead, we'll return a notice that tool invocation should be used
+        self._set_headers()
+        response = {
+            "id": "msg_01234567890123456789012345",
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "This Model Context Protocol (MCP) server is configured for tool invocation only, not direct messaging. Please use the appropriate endpoints to interact with the Facebook Ads Uploader tool.",
+                }
+            ],
+            "model": "facebook-ads-uploader-tool",
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "usage": {"input_tokens": 0, "output_tokens": 0},
+        }
+        self.wfile.write(json.dumps(response).encode())
 
-            # Call Claude API
-            response = self.client.messages.create(
-                model=model, max_tokens=max_tokens, messages=messages, system=system
-            )
-
-            # Return Claude response
+    def _handle_tools(self):
+        """Process /v1/tools API endpoint for tool invocation"""
+        # Get request body
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length == 0:
             self._set_headers()
-            self.wfile.write(json.dumps(response.dict()).encode())
+            response = {"error": "Empty request body"}
+            self.wfile.write(json.dumps(response).encode())
+            return
+
+        request_body = self.rfile.read(content_length)
+        try:
+            request_data = json.loads(request_body)
+        except json.JSONDecodeError:
+            self.send_response(400)
+            self.end_headers()
+            response = {"error": "Invalid JSON"}
+            self.wfile.write(json.dumps(response).encode())
+            return
+
+        # Process tool invocation
+        try:
+            tool_name = request_data.get("name", "")
+            parameters = request_data.get("parameters", {})
+
+            # Map tool names to functions
+            tool_functions = {
+                "create_maximizer_campaign": create_maximizer_campaign,
+                "ping": ping,
+            }
+
+            if tool_name not in tool_functions:
+                self.send_response(400)
+                self.end_headers()
+                response = {"error": f"Unknown tool: {tool_name}"}
+                self.wfile.write(json.dumps(response).encode())
+                return
+
+            # Get the function
+            func = tool_functions[tool_name]
+
+            # Extract expected parameters from function signature
+            sig = inspect.signature(func)
+            valid_params = {}
+
+            # Filter parameters based on function signature
+            for param_name, param in sig.parameters.items():
+                if param_name in parameters:
+                    valid_params[param_name] = parameters[param_name]
+                elif (
+                    param.default is inspect.Parameter.empty
+                    and not param.kind == inspect.Parameter.VAR_KEYWORD
+                ):
+                    # Required parameter missing
+                    self.send_response(400)
+                    self.end_headers()
+                    response = {"error": f"Missing required parameter: {param_name}"}
+                    self.wfile.write(json.dumps(response).encode())
+                    return
+
+            # Execute the function
+            logger.info(f"Executing tool: {tool_name}")
+            result = func(**valid_params)
+
+            # Return success response
+            self._set_headers()
+            response = {"status": "success", "result": result}
+            self.wfile.write(json.dumps(response).encode())
 
         except Exception as e:
-            logger.error(f"Error processing Claude request: {str(e)}")
+            logger.error(f"Error processing tool request: {str(e)}")
+            logger.error(traceback.format_exc())
             self.send_response(500)
             self.end_headers()
             response = {"error": f"Error: {str(e)}"}
@@ -102,26 +180,15 @@ class MCPHandler(BaseHTTPRequestHandler):
 class MCPServer:
     """Model Context Protocol server implementation"""
 
-    def __init__(self, port: int = 5000, api_key: Optional[str] = None):
+    def __init__(self, port: int = 5000):
         """Initialize the MCP server
 
         Args:
             port: Port to run the server on
-            api_key: Anthropic API key (if not provided, will try to load from env)
         """
         self.port = port
-        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         self.server = None
         self.thread = None
-
-        if not self.api_key:
-            logger.warning(
-                "No Anthropic API key provided. Claude functionality will be disabled."
-            )
-
-    def handler_factory(self, *args, **kwargs):
-        """Factory function to create handler instances with API key"""
-        return MCPHandler(*args, api_key=self.api_key, **kwargs)
 
     def start(self):
         """Start the MCP server in a background thread"""
@@ -132,10 +199,7 @@ class MCPServer:
         def run_server():
             """Run the server in a thread"""
             try:
-                server = HTTPServer(
-                    ("localhost", self.port),
-                    lambda *args, **kwargs: self.handler_factory(*args, **kwargs),
-                )
+                server = HTTPServer(("0.0.0.0", self.port), MCPHandler)
                 self.server = server
                 logger.info(f"MCP server started on port {self.port}")
                 server.serve_forever()
@@ -159,19 +223,16 @@ class MCPServer:
 
 # Example usage
 if __name__ == "__main__":
-    # Load API key from environment
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-
-    if not api_key:
-        print(
-            "Warning: No Anthropic API key found. Set the ANTHROPIC_API_KEY environment variable."
-        )
-
     # Start server
-    server = MCPServer(port=5000, api_key=api_key)
+    server = MCPServer(port=5000)
     if server.start():
-        print("MCP Server running at http://localhost:5000/")
-        print("Press Ctrl+C to stop the server")
+        print("MCP Server running at http://0.0.0.0:5000/")
+        print("Available tools:")
+        print("  - create_maximizer_campaign: Create a Facebook ad campaign")
+        print("  - ping: Check if the server is running")
+        print("\nHealth check endpoint:")
+        print("  - GET /health")
+        print("\nPress Ctrl+C to stop the server")
 
         try:
             # Keep the main thread running

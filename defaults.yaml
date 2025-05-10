@@ -6,20 +6,19 @@ campaign:
   status: "ACTIVE" # Campaign status (ACTIVE to start immediately)
   # special_ad_categories removed - will be read from spreadsheet
 ad_set:
-  daily_budget: 1000 # Daily budget in minor units (1000 = $10.00 if USD)
+  daily_budget: 100 # Daily budget in minor units (1000 = $10.00 if USD)
   billing_event: "IMPRESSIONS"
   bid_strategy: "LOWEST_COST_WITHOUT_CAP"
   optimization_goal: "OFFSITE_CONVERSIONS"
   targeting:
     device_platforms: ["mobile"]
-    publisher_platforms: ["facebook", "instagram", "audience_network"]
-    facebook_positions: ["feed", "story"]
-    instagram_positions: ["stream", "story"]
+    # publisher_platforms: ["facebook", "instagram", "audience_network"]
+    # facebook_positions: ["feed", "story"]
+    # instagram_positions: ["stream", "story"]
     # Device targeting options (all, android_only, ios_only)
     device_targeting: "all"
-  promoted_object:
-    custom_event_type: "PURCHASE"
+  # Removed promoted_object as it may be incompatible with this combination
 ad:
   status: "ACTIVE"
   call_to_action_type: "LEARN_MORE"
-landing_page_prefix: "https://kosearch.com/?token=XXXX&channel=YYY&oxd=1&q="
+landing_page_prefix: "https://kosearch.com/?token=XXXX&channel=1&oxd=1&q="

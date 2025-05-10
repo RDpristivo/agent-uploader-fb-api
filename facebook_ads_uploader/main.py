@@ -1,6 +1,7 @@
 import sys
 import argparse
 import traceback
+import logging
 from datetime import datetime
 
 from facebook_ads_uploader import config as config_module
@@ -9,6 +10,14 @@ from facebook_ads_uploader import facebook_api
 from facebook_ads_uploader import twilio_notifier
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler()],
+)
+logger = logging.getLogger("facebook_ads_uploader")
 
 
 def run():
@@ -20,7 +29,7 @@ def run():
         "--tab",
         "-t",
         type=str,
-        help="Spreadsheet tab name to use (default: today’s date DD/MM).",
+        help="Spreadsheet tab name to use (default: today's date DD/MM).",
     )
     parser.add_argument(
         "--debug",
@@ -28,67 +37,104 @@ def run():
         action="store_true",
         help="Enable debug mode for verbose output.",
     )
+    parser.add_argument(
+        "--platforms-config",
+        type=str,
+        default="platforms.yaml",
+        help="Path to platforms configuration file.",
+    )
     args = parser.parse_args()
     tab_name = args.tab
     debug = args.debug
 
+    # Set logging level based on debug flag
+    if debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logger.debug("Debug mode enabled")
+
     # Load configuration
     try:
         config = config_module.load_config("defaults.yaml")
+        platforms = config_module.load_platforms_config(args.platforms_config)
+        logger.info(f"Loaded {len(platforms)} platform configurations")
+        if debug and platforms:
+            platform_names = ", ".join(platforms.keys())
+            logger.debug(f"Loaded platforms: {platform_names}")
+
+        if not platforms:
+            logger.error(
+                "No platform configurations found. Please check your platforms.yaml file."
+            )
+            sys.exit(1)
     except Exception as e:
-        print("Failed to load configuration:", e)
+        logger.error(f"Failed to load configuration: {e}")
+        if debug:
+            traceback.print_exc()
         sys.exit(1)
 
     # Determine tab name (today's date if not provided)
     if not tab_name:
         tab_name = datetime.now().strftime("%d/%m")
     display_date = tab_name.replace("/", "-")
+    logger.info(f"Using spreadsheet tab: {tab_name}")
 
     # Fetch rows to process from Google Sheet
     try:
         worksheet, rows_to_process = sheet_module.get_rows_to_upload(
-            config["google_sheets"]["credentials_file"],
-            config["google_sheets"]["spreadsheet_id"],
+            config.get("google_sheets", {}).get(
+                "credentials_file", "service_account_credentials.json"
+            ),
+            config.get("google_sheets", {}).get("spreadsheet_id"),
             tab_name,
         )
+        logger.info(f"Retrieved {len(rows_to_process)} rows from sheet '{tab_name}'.")
     except Exception as e:
-        print(f"Error: Could not get data from Google Sheet tab '{tab_name}' - {e}")
+        logger.error(
+            f"Error: Could not get data from Google Sheet tab '{tab_name}' - {e}"
+        )
+        if debug:
+            traceback.print_exc()
         sys.exit(1)
 
-    if debug:
-        print(f"Retrieved {len(rows_to_process)} rows from sheet '{tab_name}'.")
-
-    # Filter rows where 'upload' is 'yes' and 'platform' is 'fb api'
+    # Filter rows where 'upload' is 'yes' and 'platform' is one of our supported platforms
     filtered_rows = []
+    skipped_rows_count = 0
+
     for row_idx, record in rows_to_process:
         upload_value = (
             str(record.get("Upload") or record.get("upload") or "").strip().lower()
         )
-        platform_value = (
-            str(record.get("Platform") or record.get("platform") or "").strip().lower()
-        )
+        # Get platform value while preserving original case
+        platform_value = str(
+            record.get("Platform") or record.get("platform") or ""
+        ).strip()
 
-        if upload_value == "yes" and platform_value == "fb api":
+        # Check if the platform exists in the platforms dictionary
+        if upload_value == "yes" and platform_value in platforms:
             filtered_rows.append((row_idx, record))
-        elif debug:
-            reason = []
-            if upload_value != "yes":
-                reason.append(f"'upload' is '{upload_value}' not 'yes'")
-            if platform_value != "fb api":
-                reason.append(f"'platform' is '{platform_value}' not 'fb api'")
-            print(f"Skipping row {row_idx}: {', '.join(reason)}")
+            logger.debug(
+                f"Added row {row_idx} for processing (platform: {platform_value})"
+            )
+        else:
+            skipped_rows_count += 1
+
+    # Log the total number of skipped rows rather than individual ones
+    if skipped_rows_count > 0:
+        logger.debug(f"Skipped {skipped_rows_count} rows that didn't match criteria")
 
     # Replace the original rows with filtered rows
     rows_to_process = filtered_rows
 
     if not rows_to_process:
-        if debug:
-            print("No campaigns marked for upload. Exiting.")
+        logger.info("No campaigns marked for upload. Exiting.")
         # Optionally send an SMS indicating nothing to do
         try:
             sms_msg = f"No Facebook campaigns to upload for {tab_name}."
             twilio_cfg = config.get("twilio")
-            if twilio_cfg:
+            if twilio_cfg and all(
+                twilio_cfg.get(k)
+                for k in ["account_sid", "auth_token", "from_number", "to_number"]
+            ):
                 twilio_notifier.send_sms(
                     twilio_cfg.get("account_sid"),
                     twilio_cfg.get("auth_token"),
@@ -96,55 +142,135 @@ def run():
                     twilio_cfg.get("to_number"),
                     sms_msg,
                 )
-            if debug:
-                print("Sent SMS notification for no uploads.")
+                logger.info("Sent SMS notification for no uploads.")
         except Exception as sms_e:
-            if debug:
-                print("Failed to send Twilio SMS:", sms_e)
+            logger.error(f"Failed to send Twilio SMS: {sms_e}")
         sys.exit(0)
 
     # Ensure Status and Error columns exist
     status_col_index, error_col_index = sheet_module.ensure_status_columns(worksheet)
 
-    # Initialize Facebook API
-    fb_cfg = config.get("facebook", {})
-    try:
-        facebook_api.init_facebook_api(
-            fb_cfg.get("app_id"),
-            fb_cfg.get("app_secret"),
-            fb_cfg.get("access_token"),
-            fb_cfg.get("api_version"),
-        )
-    except Exception as e:
-        print("Failed to initialize Facebook API:", e)
-        sys.exit(1)
-    ad_account_id = fb_cfg.get("ad_account_id")
-    page_id = fb_cfg.get("page_id")
-    pixel_id = fb_cfg.get("pixel_id")
-
-    # Prepare upload tasks
-    tasks = []
-    counters = {}  # track counts for (topic, country_code) to assign version letters
+    # Group rows by platform
+    rows_by_platform = {}
     for row_idx, record in rows_to_process:
-        topic = str(record.get("Topic") or record.get("topic") or "").strip()
-        country_val = record.get("Country") or record.get("country") or ""
-        country_code = facebook_api.normalize_country_code(country_val)
-        key = (topic, country_code)
-        counters[key] = counters.get(key, 0) + 1
-        version_letter = chr(ord("A") + counters[key] - 1)
-        hash_id = str(record.get("Hash ID") or record.get("hash id") or "")
-        campaign_name = (
-            f"{topic}_{country_code}_Agent_{version_letter}_{display_date}_{hash_id}"
-        )
-        if debug:
-            print(f"Prepared campaign '{campaign_name}' (Row {row_idx}) for upload.")
-        tasks.append((row_idx, campaign_name, record))
+        platform_value = str(
+            record.get("Platform") or record.get("platform") or ""
+        ).strip()
+        if platform_value not in rows_by_platform:
+            rows_by_platform[platform_value] = []
+        rows_by_platform[platform_value].append((row_idx, record))
+
+    # Process each platform and prepare upload tasks
+    tasks = []
+    for platform, platform_rows in rows_by_platform.items():
+        platform_config = platforms.get(platform, {})
+        logger.info(f"Processing {len(platform_rows)} rows for platform '{platform}'")
+
+        # Initialize Facebook API for this platform
+        try:
+            facebook_api.init_facebook_api(
+                platform_config.get("app_id"),
+                platform_config.get("app_secret"),
+                platform_config.get("access_token"),
+                platform_config.get("api_version"),
+            )
+            logger.info(f"Initialized Facebook API for platform '{platform}'")
+        except Exception as e:
+            logger.error(
+                f"Failed to initialize Facebook API for platform '{platform}': {e}"
+            )
+            # Mark all rows for this platform as failed
+            for row_idx, record in platform_rows:
+                tasks.append(
+                    (
+                        row_idx,
+                        None,  # No campaign name
+                        None,  # No record
+                        None,  # No ad account
+                        None,  # No page ID
+                        None,  # No pixel ID
+                        platform,
+                        str(e),  # Store the error message
+                    )
+                )
+            # Skip to the next platform
+            continue
+
+        ad_account_id = platform_config.get("ad_account_id")
+        page_id = platform_config.get("page_id")
+        pixel_id = platform_config.get("pixel_id")
+
+        if not ad_account_id or not page_id:
+            error_msg = f"Missing required credentials for platform '{platform}'"
+            logger.error(error_msg)
+            # Mark all rows for this platform as failed
+            for row_idx, record in platform_rows:
+                tasks.append(
+                    (
+                        row_idx,
+                        None,  # No campaign name
+                        None,  # No record
+                        None,  # No ad account
+                        None,  # No page ID
+                        None,  # No pixel ID
+                        platform,
+                        error_msg,  # Store the error message
+                    )
+                )
+            # Skip to the next platform
+            continue
+
+        # Process rows for this platform
+        counters = (
+            {}
+        )  # track counts for (topic, country_code) to assign version letters
+        for row_idx, record in platform_rows:
+            topic = str(record.get("Topic") or record.get("topic") or "").strip()
+            country_val = record.get("Country") or record.get("country") or ""
+            country_code = facebook_api.normalize_country_code(country_val)
+            key = (topic, country_code)
+            counters[key] = counters.get(key, 0) + 1
+            version_letter = chr(ord("A") + counters[key] - 1)
+            hash_id = str(record.get("Hash ID") or record.get("hash id") or "")
+            campaign_name = f"{platform}_{topic}_{country_code}_Agent_{version_letter}_{display_date.replace('-', '.')}_{hash_id}"
+
+            logger.debug(
+                f"Prepared campaign '{campaign_name}' (Row {row_idx}) for upload with platform '{platform}'"
+            )
+            tasks.append(
+                (
+                    row_idx,
+                    campaign_name,
+                    record,
+                    ad_account_id,
+                    page_id,
+                    pixel_id,
+                    platform,
+                    None,  # No error
+                )
+            )
 
     # Upload campaigns with up to 3 concurrent workers
     results = []
     with ThreadPoolExecutor(max_workers=3) as executor:
         future_to_task = {}
-        for row_idx, campaign_name, record in tasks:
+        for (
+            row_idx,
+            campaign_name,
+            record,
+            ad_account_id,
+            page_id,
+            pixel_id,
+            platform,
+            error_msg,
+        ) in tasks:
+            if error_msg:  # This row had a pre-execution error
+                results.append((row_idx, "FAILED", error_msg))
+                logger.error(
+                    f"[FAILED] Row {row_idx} (Platform: {platform}) -> {error_msg}"
+                )
+                continue
+
             future = executor.submit(
                 facebook_api.upload_campaign,
                 ad_account_id,
@@ -154,19 +280,23 @@ def run():
                 record,
                 config,
             )
-            future_to_task[future] = (row_idx, campaign_name)
+            future_to_task[future] = (row_idx, campaign_name, platform)
+
         for future in as_completed(future_to_task):
-            row_idx, campaign_name = future_to_task[future]
+            row_idx, campaign_name, platform = future_to_task[future]
             try:
-                future.result()  # raises exception if the upload failed
-                results.append((row_idx, "SUCCESS", ""))
-                if debug:
-                    print(f"[SUCCESS] {campaign_name} (Row {row_idx})")
+                campaign_id = future.result()  # raises exception if the upload failed
+                results.append((row_idx, "SUCCESS", f"Campaign ID: {campaign_id}"))
+                logger.info(
+                    f"[SUCCESS] {campaign_name} (Row {row_idx}, Platform: {platform})"
+                )
             except Exception as exc:
                 err_msg = str(exc)
                 results.append((row_idx, "FAILED", err_msg))
+                logger.error(
+                    f"[FAILED] {campaign_name} (Row {row_idx}, Platform: {platform}) -> {err_msg}"
+                )
                 if debug:
-                    print(f"[FAILED] {campaign_name} (Row {row_idx}) -> {err_msg}")
                     traceback.print_exc()
 
     # Sort results by row index (to update in order)
@@ -177,10 +307,11 @@ def run():
         sheet_module.update_status_rows(
             worksheet, status_col_index, error_col_index, results
         )
-        if debug:
-            print("Spreadsheet updated with status and error information.")
+        logger.info("Spreadsheet updated with status and error information.")
     except Exception as e:
-        print("Error updating spreadsheet statuses:", e)
+        logger.error(f"Error updating spreadsheet statuses: {e}")
+        if debug:
+            traceback.print_exc()
 
     # Compose SMS summary
     total = len(results)
@@ -203,7 +334,10 @@ def run():
 
     # Send Twilio SMS
     twilio_cfg = config.get("twilio")
-    if twilio_cfg:
+    if twilio_cfg and all(
+        twilio_cfg.get(k)
+        for k in ["account_sid", "auth_token", "from_number", "to_number"]
+    ):
         try:
             twilio_notifier.send_sms(
                 twilio_cfg.get("account_sid"),
@@ -212,13 +346,13 @@ def run():
                 twilio_cfg.get("to_number"),
                 sms_message,
             )
-            if debug:
-                print("Twilio SMS sent.")
+            logger.info("Twilio SMS sent.")
         except Exception as e:
-            print("Failed to send Twilio SMS notification:", e)
+            logger.error(f"Failed to send Twilio SMS notification: {e}")
     else:
-        if debug:
-            print("Twilio configuration not provided; skipping SMS notification.")
+        logger.info(
+            "Twilio configuration not provided or incomplete; skipping SMS notification."
+        )
 
 
 if __name__ == "__main__":
