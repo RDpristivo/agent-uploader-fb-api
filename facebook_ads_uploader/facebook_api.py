@@ -37,6 +37,37 @@ COUNTRY_NAME_TO_CODE = {
     "chile": "CL",
 }
 
+# List of EU country codes for DSA compliance checks
+EU_COUNTRIES = [
+    "AT",
+    "BE",
+    "BG",
+    "HR",
+    "CY",
+    "CZ",
+    "DK",
+    "EE",
+    "FI",
+    "FR",
+    "DE",
+    "GR",
+    "HU",
+    "IE",
+    "IT",
+    "LV",
+    "LT",
+    "LU",
+    "MT",
+    "NL",
+    "PL",
+    "PT",
+    "RO",
+    "SK",
+    "SI",
+    "ES",
+    "SE",
+]
+
 
 # Custom exceptions
 class FacebookAPIError(Exception):
@@ -222,9 +253,9 @@ def extract_media_urls(media_value: str) -> list:
     if not media_value:
         return []
 
-    # First try splitting by " | " and strip each value
-    if " | " in media_value:
-        urls = [url.strip() for url in str(media_value).split(" | ") if url.strip()]
+    # First try splitting by "|" and strip each value
+    if "|" in media_value:
+        urls = [url.strip() for url in str(media_value).split("|") if url.strip()]
         logger.debug(f"Extracted {len(urls)} media URLs using pipe separator")
         return urls
 
@@ -319,6 +350,33 @@ def modify_landing_page_url(base_url: str, query: str, layer_index: int = 0) -> 
         return base_url + encoded_query
 
 
+def is_targeting_eu_country(targeting: dict) -> bool:
+    """
+    Determine if the targeting includes any EU country.
+
+    Args:
+        targeting: The targeting dictionary
+
+    Returns:
+        True if targeting includes any EU country, False otherwise
+    """
+    if not targeting or "geo_locations" not in targeting:
+        return False
+
+    geo_locations = targeting.get("geo_locations", {})
+    if "countries" not in geo_locations:
+        return False
+
+    target_countries = [c.upper() for c in geo_locations.get("countries", [])]
+
+    # Check if any target country is in the EU
+    for country in target_countries:
+        if country in EU_COUNTRIES:
+            return True
+
+    return False
+
+
 def upload_campaign(
     ad_account_id: str,
     page_id: str,
@@ -338,6 +396,9 @@ def upload_campaign(
         raise ValueError("Missing ad_account_id parameter")
     if not page_id:
         raise ValueError("Missing page_id parameter")
+
+    # Extract platform from campaign name (first part before underscore)
+    platform = campaign_name.split("_")[0] if "_" in campaign_name else None
 
     # Load default settings
     campaign_defaults = defaults.get("campaign", {})
@@ -364,7 +425,24 @@ def upload_campaign(
         special_ad_categories = categories
 
     # Ad set settings
-    daily_budget = adset_defaults.get("daily_budget", 1000)
+    # Check if Budget column exists in the row data and use it if available
+    budget_value = row_data.get("Budget") or row_data.get("budget")
+    if budget_value and str(budget_value).strip():
+        try:
+            # Convert budget to cents (minor units)
+            daily_budget = int(float(str(budget_value).strip()) * 100)
+            logger.info(
+                f"Using budget from spreadsheet: ${budget_value} ({daily_budget} minor units)"
+            )
+        except (ValueError, TypeError):
+            # Fallback to default budget
+            daily_budget = adset_defaults.get("daily_budget", 1000)
+            logger.warning(
+                f"Invalid budget value '{budget_value}'. Using default: {daily_budget} minor units."
+            )
+    else:
+        daily_budget = adset_defaults.get("daily_budget", 1000)
+
     billing_event = adset_defaults.get("billing_event", "IMPRESSIONS")
     bid_strategy = adset_defaults.get("bid_strategy", "LOWEST_COST_WITHOUT_CAP")
 
@@ -425,20 +503,25 @@ def upload_campaign(
     ad_ids = []
     temp_files = []  # Track temporary files to clean up
 
+    # Store DSA information for later use with ads
+    targeting_eu = False
+    dsa_beneficiary = None
+    dsa_payor = None
+
     try:
         ad_account = AdAccount(ad_account_id)
 
         # 1. Create Campaign
+        campaign_params = {
+            "name": campaign_name,
+            "objective": objective,
+            "buying_type": buying_type,
+            "status": campaign_status,
+            "special_ad_categories": special_ad_categories,
+        }
+
         try:
-            campaign = ad_account.create_campaign(
-                params={
-                    "name": campaign_name,
-                    "objective": objective,
-                    "buying_type": buying_type,
-                    "status": campaign_status,
-                    "special_ad_categories": special_ad_categories,
-                }
-            )
+            campaign = ad_account.create_campaign(params=campaign_params)
             campaign_id = campaign["id"]
             logger.info(f"Created campaign '{campaign_name}' with ID {campaign_id}")
         except FacebookRequestError as e:
@@ -462,6 +545,16 @@ def upload_campaign(
         if country_code and country_code.upper() != "WW":
             targeting.setdefault("geo_locations", {"countries": [country_code]})
 
+        # Check if pixel ID is valid
+        valid_pixel = pixel_id and isinstance(pixel_id, str) and pixel_id.strip()
+        promoted_object = None
+        if valid_pixel:
+            promoted_object = {
+                "pixel_id": pixel_id.strip(),
+                "custom_event_type": "PURCHASE",
+            }
+
+        # Prepare base ad set parameters
         adset_params = {
             "name": campaign_name,
             "campaign_id": campaign_id,
@@ -471,12 +564,41 @@ def upload_campaign(
             "optimization_goal": optimization_goal,
             "targeting": targeting,
             "status": campaign_status,
-            "promoted_object": (
-                {"pixel_id": pixel_id, "custom_event_type": "PURCHASE"}
-                if pixel_id
-                else None
-            ),
         }
+
+        # Add promoted_object if valid
+        if promoted_object:
+            adset_params["promoted_object"] = promoted_object
+
+        # Check if targeting EU countries (for DSA compliance)
+        targeting_eu = is_targeting_eu_country(targeting)
+        if targeting_eu:
+            # Get beneficiary and payor from row data or use advertiser name
+            beneficiary = row_data.get("Beneficiary") or row_data.get("beneficiary")
+            payor = row_data.get("Payor") or row_data.get("payor")
+
+            if not beneficiary:
+                # Use company/brand name or default to the platform name
+                company_name = (
+                    row_data.get("Company") or row_data.get("company") or platform
+                )
+                beneficiary = company_name
+
+            if not payor:
+                # Use the same value as beneficiary if no specific payor is provided
+                payor = beneficiary
+
+            # Store for later use with ads
+            dsa_beneficiary = beneficiary
+            dsa_payor = payor
+
+            # Add DSA parameters as simple strings (NOT as objects with name property)
+            adset_params["dsa_beneficiary"] = beneficiary
+            logger.info(f"Added DSA beneficiary '{beneficiary}' for EU compliance")
+
+            # Add dsa_payor parameter (always required for EU, even if same as beneficiary)
+            adset_params["dsa_payor"] = payor
+            logger.info(f"Added DSA payor '{payor}' for EU compliance")
 
         try:
             adset = ad_account.create_ad_set(params=adset_params)
@@ -521,14 +643,13 @@ def upload_campaign(
                     "type": call_to_action_type,
                     "value": {"link": landing_page_url},
                 },
-                # "image_crops": {},  # Add this to disable cropping
-                # "crop_type": "original_dimensions",  # Add this to use original dimensions
             }
 
+            # Set Facebook Page as Instagram identity
             creative_spec = {
                 "page_id": page_id,
-                # "instagram_actor_id": page_id,
                 "link_data": link_data,
+                "use_page_actor_override": True,  # This will use Facebook Page for Instagram
             }
 
             try:
@@ -611,18 +732,61 @@ def upload_campaign(
                     f"Created creative {i+1} with ID {creative_id} for media URL: {media_url}"
                 )
 
-                # Create ad
-                ad = ad_account.create_ad(
-                    params={
-                        "name": f"{campaign_name} Ad {i + 1}",
-                        "adset_id": adset_id,
-                        "creative": {"creative_id": creative_id},
-                        "status": ad_status,
-                    }
-                )
-                ad_id = ad["id"]
-                ad_ids.append(ad_id)
-                logger.info(f"Created ad {i+1} with ID {ad_id}")
+                # Prepare ad parameters
+                ad_params = {
+                    "name": f"{campaign_name} Ad {i + 1}",
+                    "adset_id": adset_id,
+                    "creative": {"creative_id": creative_id},
+                    "status": ad_status,
+                }
+
+                # Add DSA parameters to ad level for EU targeting
+                if targeting_eu and dsa_beneficiary:
+                    if dsa_beneficiary:
+                        ad_params["dsa_beneficiary"] = dsa_beneficiary
+                    if dsa_payor:
+                        ad_params["dsa_payor"] = dsa_payor
+
+                # Create the ad with retries (sometimes FB can be flaky)
+                max_retries = 3
+                retry_count = 0
+                ad_created = False
+
+                while retry_count < max_retries and not ad_created:
+                    try:
+                        # Create ad with full error trace
+                        ad = ad_account.create_ad(params=ad_params)
+                        ad_id = ad["id"]
+                        ad_ids.append(ad_id)
+                        logger.info(f"Created ad {i+1} with ID {ad_id}")
+                        ad_created = True
+                    except FacebookRequestError as e:
+                        error_msg = f"Facebook API error creating ad {i+1}: {e.api_error_message()}"
+                        logger.error(error_msg)
+                        logger.error(f"Full error: {e}")
+
+                        # Increment retry counter
+                        retry_count += 1
+
+                        if retry_count < max_retries:
+                            logger.info(
+                                f"Retrying ad creation ({retry_count}/{max_retries})..."
+                            )
+                            # Wait a bit before retrying (give FB time to process)
+                            import time
+
+                            time.sleep(2)
+                        else:
+                            logger.error(
+                                f"Failed to create ad after {max_retries} attempts"
+                            )
+                            # Continue with other creatives even if one fails after all retries
+                            break
+                    except Exception as e:
+                        logger.error(f"Error creating ad {i+1}: {str(e)}")
+                        # Continue with other creatives even if one fails
+                        break
+
             except FacebookRequestError as e:
                 logger.error(
                     f"Facebook API error creating creative/ad {i+1} with URL {media_url}: {e.api_error_message()}"
