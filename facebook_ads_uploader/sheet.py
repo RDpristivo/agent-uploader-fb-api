@@ -11,6 +11,31 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def get_available_tabs(credentials_file: str, spreadsheet_id: str) -> list:
+    """
+    Connect to Google Sheets using a service account and retrieve all available tab names.
+    Returns a list of tab names that exist in the spreadsheet.
+    """
+    if not credentials_file:
+        raise ValueError("Credentials file path is required")
+    if not spreadsheet_id:
+        raise ValueError("Spreadsheet ID is required")
+
+    try:
+        # Authenticate and open the spreadsheet
+        gc = gspread.service_account(filename=credentials_file)
+        sh = gc.open_by_key(spreadsheet_id)
+
+        # Get all worksheets and extract their titles
+        worksheets = sh.worksheets()
+        tab_names = [ws.title for ws in worksheets]
+
+        return tab_names
+    except Exception as e:
+        logger.error(f"Failed to get available tabs: {e}")
+        return []
+
+
 def get_rows_to_upload(credentials_file: str, spreadsheet_id: str, tab_name: str):
     """
     Connect to Google Sheets using a service account and retrieve all rows from the specified tab.
@@ -30,6 +55,7 @@ def get_rows_to_upload(credentials_file: str, spreadsheet_id: str, tab_name: str
     max_retries = 3
     retry_count = 0
     last_error = None
+    worksheet = None
 
     while retry_count < max_retries:
         try:
@@ -55,7 +81,14 @@ def get_rows_to_upload(credentials_file: str, spreadsheet_id: str, tab_name: str
                     logger.error(
                         f"Could not open tab with alternative name '{alt_tab_name}' either"
                     )
-                    raise RuntimeError(f"Could not open tab '{tab_name}': {e}")
+
+                    # Get available tabs to provide helpful error message
+                    available_tabs = [ws.title for ws in sh.worksheets()]
+                    logger.info(f"Available tabs: {', '.join(available_tabs)}")
+
+                    raise RuntimeError(
+                        f"Could not open tab '{tab_name}'. Available tabs: {', '.join(available_tabs)}"
+                    )
         except Exception as e:
             last_error = e
             retry_count += 1
@@ -68,9 +101,21 @@ def get_rows_to_upload(credentials_file: str, spreadsheet_id: str, tab_name: str
                 logger.error(
                     f"All {max_retries} attempts to connect to Google Sheets failed"
                 )
-                raise RuntimeError(
-                    f"Failed to connect to Google Sheets after {max_retries} attempts: {e}"
-                )
+
+                # Get available tabs
+                try:
+                    gc = gspread.service_account(filename=credentials_file)
+                    sh = gc.open_by_key(spreadsheet_id)
+                    available_tabs = [ws.title for ws in sh.worksheets()]
+                    raise RuntimeError(
+                        f"Failed to connect to Google Sheets after {max_retries} attempts: {e}\n"
+                        f"Available tabs: {', '.join(available_tabs)}"
+                    )
+                except:
+                    # If we can't even get the tabs list, just raise the original error
+                    raise RuntimeError(
+                        f"Failed to connect to Google Sheets after {max_retries} attempts: {e}"
+                    )
 
     if not worksheet:
         raise RuntimeError(f"Could not open worksheet: {last_error}")

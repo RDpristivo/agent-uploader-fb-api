@@ -43,9 +43,15 @@ def run():
         default="platforms.yaml",
         help="Path to platforms configuration file.",
     )
+    parser.add_argument(
+        "--list-tabs",
+        action="store_true",
+        help="List all available tabs in the spreadsheet and exit.",
+    )
     args = parser.parse_args()
     tab_name = args.tab
     debug = args.debug
+    list_tabs = args.list_tabs
 
     # Set logging level based on debug flag
     if debug:
@@ -72,6 +78,27 @@ def run():
             traceback.print_exc()
         sys.exit(1)
 
+    # Get Google Sheets credentials and spreadsheet ID
+    credentials_file = config.get("google_sheets", {}).get(
+        "credentials_file", "service_account_credentials.json"
+    )
+    spreadsheet_id = config.get("google_sheets", {}).get("spreadsheet_id")
+
+    # If list-tabs flag is set, just list the tabs and exit
+    if list_tabs:
+        try:
+            available_tabs = sheet_module.get_available_tabs(
+                credentials_file, spreadsheet_id
+            )
+            print("Available tabs in the spreadsheet:")
+            for i, tab in enumerate(available_tabs, 1):
+                print(f"  {i}. {tab}")
+            print('\nUse --tab "TAB_NAME" to specify a tab to process')
+            sys.exit(0)
+        except Exception as e:
+            logger.error(f"Failed to list tabs: {e}")
+            sys.exit(1)
+
     # Determine tab name (today's date if not provided)
     if not tab_name:
         tab_name = datetime.now().strftime("%d/%m")
@@ -81,17 +108,29 @@ def run():
     # Fetch rows to process from Google Sheet
     try:
         worksheet, rows_to_process = sheet_module.get_rows_to_upload(
-            config.get("google_sheets", {}).get(
-                "credentials_file", "service_account_credentials.json"
-            ),
-            config.get("google_sheets", {}).get("spreadsheet_id"),
+            credentials_file,
+            spreadsheet_id,
             tab_name,
         )
         logger.info(f"Retrieved {len(rows_to_process)} rows from sheet '{tab_name}'.")
     except Exception as e:
-        logger.error(
-            f"Error: Could not get data from Google Sheet tab '{tab_name}' - {e}"
-        )
+        error_msg = str(e)
+        if "Available tabs:" in error_msg:
+            logger.error(
+                f"Error: Could not get data from Google Sheet tab '{tab_name}'"
+            )
+            print("\n" + "=" * 80)
+            print(f"ERROR: Tab '{tab_name}' not found in the spreadsheet.")
+            print(error_msg)
+            print("\nYou can:")
+            print("1. Create a tab with this name in your spreadsheet")
+            print('2. Use --tab "TAB_NAME" to specify an existing tab')
+            print("3. Use --list-tabs to see all available tabs")
+            print("=" * 80 + "\n")
+        else:
+            logger.error(
+                f"Error: Could not get data from Google Sheet tab '{tab_name}' - {e}"
+            )
         if debug:
             traceback.print_exc()
         sys.exit(1)
@@ -135,14 +174,27 @@ def run():
                 twilio_cfg.get(k)
                 for k in ["account_sid", "auth_token", "from_number", "to_number"]
             ):
-                twilio_notifier.send_sms(
-                    twilio_cfg.get("account_sid"),
-                    twilio_cfg.get("auth_token"),
-                    twilio_cfg.get("from_number"),
-                    twilio_cfg.get("to_number"),
-                    sms_msg,
+                # Validate Twilio credentials first
+                if twilio_notifier.validate_twilio_credentials(
+                    twilio_cfg.get("account_sid"), twilio_cfg.get("auth_token")
+                ):
+                    twilio_notifier.send_sms(
+                        twilio_cfg.get("account_sid"),
+                        twilio_cfg.get("auth_token"),
+                        twilio_cfg.get("from_number"),
+                        twilio_cfg.get("to_number"),
+                        sms_msg,
+                    )
+                    logger.info("Sent SMS notification for no uploads.")
+                else:
+                    logger.error("Twilio credentials are invalid. SMS not sent.")
+                    print(
+                        "\nWarning: Twilio credentials are invalid. SMS notification was not sent."
+                    )
+            else:
+                logger.info(
+                    "Twilio configuration not provided or incomplete; skipping SMS notification."
                 )
-                logger.info("Sent SMS notification for no uploads.")
         except Exception as sms_e:
             logger.error(f"Failed to send Twilio SMS: {sms_e}")
         sys.exit(0)
@@ -226,8 +278,14 @@ def run():
         )  # track counts for (topic, country_code) to assign version letters
         for row_idx, record in platform_rows:
             topic = str(record.get("Topic") or record.get("topic") or "").strip()
-            country_val = record.get("Country") or record.get("country") or ""
-            country_code = facebook_api.normalize_country_code(country_val)
+
+            # First check if Country_code is provided directly
+            country_code = record.get("Country_code") or record.get("country_code")
+            if not country_code:
+                # Fall back to normalizing the country name
+                country_val = record.get("Country") or record.get("country") or ""
+                country_code = facebook_api.normalize_country_code(country_val)
+
             key = (topic, country_code)
             counters[key] = counters.get(key, 0) + 1
             version_letter = chr(ord("A") + counters[key] - 1)
@@ -339,16 +397,26 @@ def run():
         for k in ["account_sid", "auth_token", "from_number", "to_number"]
     ):
         try:
-            twilio_notifier.send_sms(
-                twilio_cfg.get("account_sid"),
-                twilio_cfg.get("auth_token"),
-                twilio_cfg.get("from_number"),
-                twilio_cfg.get("to_number"),
-                sms_message,
-            )
-            logger.info("Twilio SMS sent.")
+            # Validate Twilio credentials before sending
+            if twilio_notifier.validate_twilio_credentials(
+                twilio_cfg.get("account_sid"), twilio_cfg.get("auth_token")
+            ):
+                twilio_notifier.send_sms(
+                    twilio_cfg.get("account_sid"),
+                    twilio_cfg.get("auth_token"),
+                    twilio_cfg.get("from_number"),
+                    twilio_cfg.get("to_number"),
+                    sms_message,
+                )
+                logger.info("Twilio SMS sent.")
+            else:
+                logger.error("Twilio credentials validation failed. SMS not sent.")
+                print(
+                    "\nWARNING: Twilio credentials are invalid. SMS notification was not sent."
+                )
         except Exception as e:
             logger.error(f"Failed to send Twilio SMS notification: {e}")
+            print(f"\nWARNING: Failed to send SMS notification: {e}")
     else:
         logger.info(
             "Twilio configuration not provided or incomplete; skipping SMS notification."

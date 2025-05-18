@@ -5,3 +5,4 @@ twilio
 PyYAML
 python-dotenv
 anthropic
+opencv-python>=4.11.0

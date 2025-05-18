@@ -10,6 +10,7 @@ ad_set:
   billing_event: "IMPRESSIONS"
   bid_strategy: "LOWEST_COST_WITHOUT_CAP"
   optimization_goal: "OFFSITE_CONVERSIONS"
+  beneficiary: "PRISTIVO LTD" # Default beneficiary for EU ads (DSA compliance)
   targeting:
     device_platforms: ["mobile"]
     # publisher_platforms: ["facebook", "instagram", "audience_network"]
@@ -21,4 +22,5 @@ ad_set:
 ad:
   status: "ACTIVE"
   call_to_action_type: "LEARN_MORE"
+  use_facebook_page_for_instagram: true # Use Facebook Page for Instagram when possible
 landing_page_prefix: "https://kosearch.com/?token=XXXX&channel=1&oxd=1&q="

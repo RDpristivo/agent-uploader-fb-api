@@ -1,29 +1,51 @@
 # 🚀 Facebook Ads Automation System
 
-An automated system for uploading Facebook ad campaigns directly from Google Sheets using the Facebook Marketing API.
+An easy-to-use system that automatically creates and uploads Facebook ad campaigns directly from your Google Sheets data. No coding required!
+
+> **Recent Updates (May 18, 2025)**: Fixed PBIA integration for image creatives and enhanced video thumbnail extraction. See [UPDATES.md](UPDATES.md) for details.
+
+## 💼 Business Benefits
+
+- **Save Time**: Create multiple ad campaigns in minutes instead of hours
+- **Reduce Errors**: Automated uploads eliminate manual entry mistakes
+- **Track Performance**: Keep all campaign data organized in one spreadsheet
+- **Scale Easily**: Launch dozens of campaigns with different images at once
 
 ## ✨ Features
 
 - 📊 **Spreadsheet Integration**: Read campaign data directly from Google Sheets
 - 📱 **Multiple Device Targeting**: Target Android devices, iOS devices, or both
-- 🖼️ **Multi-Image Campaigns**: Automatically create multiple ad layers from multiple media URLs
-- 🔄 **Channel Tracking**: Automatically increments channel parameters for each ad layer
+- 🖼️ **Multi-Image Campaigns**: Automatically create multiple ad variations from multiple images
+- 🔄 **Channel Tracking**: Automatically increments channel parameters for each ad
 - 📋 **Special Ad Categories**: Support for Facebook's special ad categories
 - ✅ **Status Tracking**: Updates Google Sheets with upload status and error messages
-- 📲 **SMS Notifications**: Receive SMS alerts about upload status via Twilio
-- 🤖 **AI Integration**: Connects to Claude AI via Model Context Protocol (MCP)
+- 📲 **SMS Notifications**: Receive text alerts about upload status
+- 🤖 **AI Integration**: Connects to Claude AI to help optimize campaigns
 
-## 📋 Prerequisites
+## 🏃‍♀️ Quick Start for Non-Technical Users
+
+1. **Fill in the Google Sheet**: Add your campaign details to our template
+2. **Set "Upload" to "yes"**: Only rows with "yes" in the Upload column will be processed
+3. **Wait for confirmation**: You'll receive an SMS when your campaigns are live
+4. **Check the Status column**: The sheet will update with "Success" or error details
+
+Need help? Contact the marketing tech team on Slack at #marketing-automation-help
+
+## 📋 For the Technical Team
+
+### Prerequisites
 
 - Python 3.8+ installed on your system
 - A Facebook developer account and app with Marketing API access
 - A Google Cloud account with Google Sheets API enabled
 - A Twilio account (optional, for SMS notifications)
 - An Anthropic API key (optional, for Claude AI integration)
+- Pillow library (for image processing)
+- ffmpeg (optional, for video thumbnail extraction)
 
-## 🔧 Configuration
+### 🔧 Configuration
 
-### Environment Setup
+#### Environment Setup
 
 1. Create a virtual environment and install dependencies:
 
@@ -44,6 +66,7 @@ An automated system for uploading Facebook ad campaigns directly from Google She
    FB_PAGE_ID="your_page_id"
    FB_PIXEL_ID="your_pixel_id"
    FB_API_VERSION="v22.0"
+   FB_PBIA="your_instagram_account_id"  # Page-Backed Instagram Account ID
 
    # Google Sheets Credentials
    GOOGLE_CREDENTIALS_FILE="service_account_credentials.json"
@@ -65,19 +88,27 @@ An automated system for uploading Facebook ad campaigns directly from Google She
 
 Your Google Sheet should include the following columns:
 
-| Column Name         | Description                                    | Required |
-| ------------------- | ---------------------------------------------- | -------- |
-| Upload              | Set to "yes" to upload this campaign           | Yes      |
-| Platform            | Set to "fb api" for Facebook API campaigns     | Yes      |
-| Topic               | Campaign topic/name                            | Yes      |
-| Country             | Target country (name or 2-letter code)         | Yes      |
-| Device Targeting    | "all", "android_only", or "ios_only"           | No       |
-| Title               | Ad headline                                    | Yes      |
-| Body                | Ad primary text                                | Yes      |
-| Query               | Search query for landing page URL              | Yes      |
-| Media Path          | Image URL(s) separated by spaces               | Yes      |
-| Special Ad Category | Facebook special ad category (e.g., "HOUSING") | No       |
-| Hash ID             | Unique identifier for the campaign             | No       |
+| Column Name         | Description                                               | Required    | Example                                                       |
+| ------------------- | --------------------------------------------------------- | ----------- | ------------------------------------------------------------- |
+| Upload              | Type "yes" when you want to create this campaign          | Yes         | yes                                                           |
+| Platform            | Must be set to "fb api" for Facebook campaigns            | Yes         | fb api                                                        |
+| Topic               | What your campaign is about (becomes the campaign name)   | Yes         | Summer Sale                                                   |
+| Country             | Which country to target ads to                            | Yes         | US or United States                                           |
+| Device Targeting    | Which devices to show ads on                              | No          | all (default), android_only, or ios_only                      |
+| Title               | The headline that appears in your ad                      | Yes         | 50% Off Summer Collection                                     |
+| Body                | The main text of your advertisement                       | Yes         | Shop our summer collection with free shipping!                |
+| Query               | Keyword used in the landing page URL                      | Yes         | summer sale                                                   |
+| Media Path          | URL(s) to the images you want to use, separated by spaces | Yes         | https://example.com/image1.jpg https://example.com/image2.jpg |
+| Special Ad Category | For housing, credit, employment, or politics ads          | No          | HOUSING, CREDIT, EMPLOYMENT, POLITICS                         |
+| Hash ID             | Unique identifier for tracking (auto-generated if empty)  | No          | abc123                                                        |
+| Status              | Shows if upload succeeded or failed (don't fill this in)  | Auto-filled | Success or Error message                                      |
+
+#### Tips for Filling Out the Sheet:
+
+- Put each campaign on a separate row
+- For multiple images, paste all URLs in the Media Path column with spaces between them
+- The system will create separate ads for each image and increment the channel number
+- Always double-check country codes and image URLs before setting Upload to "yes"
 
 ## 🚀 Running the Automation
 
@@ -165,3 +196,126 @@ You can target specific devices by setting the "Device Targeting" column:
    - Check that images meet Facebook's size and content requirements
 
 For more help, run with the `--debug` flag to see detailed error messages.
+
+Run the uploader with debug mode enabled:
+
+```bash
+python -m facebook_ads_uploader --debug
+```
+
+## 🧪 Testing
+
+The system includes comprehensive testing utilities for validating functionality:
+
+### Automated Tests
+
+Run all automated tests:
+
+```bash
+python -m unittest discover tests
+```
+
+### Testing Video Thumbnail Generation
+
+The system includes a robust thumbnail generation mechanism for video ads, with multiple fallback options:
+
+1. Extract thumbnail using ffmpeg (if available)
+2. Generate a placeholder thumbnail using Pillow
+3. Use a reliable image URL as a last resort
+
+To test thumbnail extraction:
+
+```bash
+# Test the fallback mechanism with a non-existent video
+python -m facebook_ads_uploader.test_utils thumbnail
+
+# Test with a real video file
+python -m facebook_ads_uploader.test_utils thumbnail /path/to/your/video.mp4
+```
+
+### Testing PBIA Integration
+
+The system supports PBIA (Page-Backed Instagram Account) integration, allowing ads to display your Facebook Page's identity on Instagram. This requires proper configuration of the `use_page_actor_override` parameter and the Instagram user ID.
+
+To test PBIA integration for both image and video creatives:
+
+```bash
+# Test PBIA integration with default test URLs
+python -m facebook_ads_uploader.test_pbia
+
+# Test with specific URLs
+python -m facebook_ads_uploader.test_pbia --image-url "https://example.com/image.jpg" --video-url "https://example.com/video.mp4"
+
+# Test only image PBIA integration
+python -m facebook_ads_uploader.test_pbia --image-only
+
+# Test only video PBIA integration
+python -m facebook_ads_uploader.test_pbia --video-only
+
+# Test with real-world URLs from production logs
+python -m facebook_ads_uploader.test_pbia --real-world
+```
+
+This test verifies that:
+
+1. The `use_page_actor_override` parameter is correctly set to `True`
+2. The `instagram_user_id` parameter is correctly set with the PBIA ID
+3. Both image and video creatives properly handle these PBIA parameters
+
+For more information about testing, see the [tests/README.md](tests/README.md) file.
+
+## 🔒 Instagram Identity Integration (PBIA)
+
+The system supports Facebook's Page-Backed Instagram Account (PBIA) integration, which allows your ads to display your Facebook Page's identity when shown on Instagram.
+
+### How PBIA Works
+
+1. Your Facebook Page must be linked to an Instagram account (done in Facebook Business Settings)
+2. The Instagram account ID (PBIA ID) must be provided in the environment variable `FB_PBIA`
+3. Two key parameters must be properly set for PBIA to work:
+   - `use_page_actor_override`: Must be set to `True`
+   - `instagram_user_id` (or `instagram_actor_id` for older API versions): Must be set to your PBIA ID
+
+### PBIA Configuration
+
+1. Set the `FB_PBIA` environment variable with your Instagram account ID:
+
+   ```
+   FB_PBIA="your_instagram_account_id"
+   ```
+
+2. The system automatically handles the rest, ensuring proper PBIA integration for both image and video ads
+
+### Troubleshooting PBIA Issues
+
+If your ads aren't showing with the correct identity on Instagram:
+
+1. Verify the `FB_PBIA` environment variable is correctly set
+2. Run the PBIA test to verify proper integration:
+   ```
+   python -m facebook_ads_uploader.test_pbia
+   ```
+3. Check the Facebook Ad Manager UI under the "Identity" section - it should show "Use Facebook Page"
+4. Ensure your Facebook Page is properly linked to your Instagram account in Facebook Business Settings
+
+#### Known PBIA Behavior
+
+The Facebook API handling of PBIA parameters may vary between image and video creatives:
+
+1. For **video creatives**:
+
+   - The `use_page_actor_override` and `instagram_user_id` parameters are required and should both be set
+   - The Facebook Ad UI reliably shows "Use Facebook Page" option
+
+2. For **image creatives**:
+
+   - The `use_page_actor_override` parameter must be set to `true` in the API call
+   - However, the API may not return this parameter in the response, even when it's properly applied
+   - The success of PBIA integration can be verified by checking the `instagram_user_id` in the response
+   - You can also verify in the Facebook Ad UI if the "Use Facebook Page" option appears
+
+3. Testing with real-world URLs:
+   ```
+   python -m facebook_ads_uploader.test_pbia --real-world
+   ```
+   This uses the exact URLs from production logs to verify PBIA integration works consistently

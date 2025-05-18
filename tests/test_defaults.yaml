@@ -1,0 +1,33 @@
+# Test configuration for PBIA integration tests
+landing_page:
+  prefix: "https://example.com/"
+  utm_params: true
+
+# Default campaign parameters
+campaign:
+  objective: "OUTCOME_AWARENESS"
+  status: "PAUSED"
+  special_ad_categories: []
+
+# Default ad set parameters
+adset:
+  optimization_goal: "REACH"
+  billing_event: "IMPRESSIONS"
+  bid_strategy: "LOWEST_COST_WITHOUT_CAP"
+  lifetime_budget: 10000 # in minor currency units (e.g., cents)
+  attribution_spec:
+    - "action.type": "landing_page_view"
+      "window_days": 7
+  promoted_object: {}
+  targeting:
+    age_min: 18
+    age_max: 65
+    genders: [1, 2]
+    device_platforms: ["mobile", "desktop"]
+    publisher_platforms: ["facebook", "instagram"]
+    facebook_positions: ["feed", "instant_article"]
+    instagram_positions: ["stream"]
+
+# Default ad parameters
+ad:
+  status: "PAUSED"
